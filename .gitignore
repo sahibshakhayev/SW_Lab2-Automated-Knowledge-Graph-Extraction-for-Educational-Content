@@ -4,7 +4,11 @@ node_modules/
 backend/venv/
 __pycache__/
 *.pyc
+*.docx
+.DS_Store
 
 
 .env
-.DS_Store
+.env*.local
+*.env
+
