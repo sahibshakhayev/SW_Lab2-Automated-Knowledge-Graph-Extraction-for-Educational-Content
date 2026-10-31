@@ -20,7 +20,8 @@ services:
       - OPENROUTER_MODEL=${OPENROUTER_MODEL:-deepseek/deepseek-v4-flash-0731}
     restart: always
     depends_on:
-      - neo4j: condition:service_healthy
+      neo4j:
+        condition: service_healthy
 
   frontend:
     build:
