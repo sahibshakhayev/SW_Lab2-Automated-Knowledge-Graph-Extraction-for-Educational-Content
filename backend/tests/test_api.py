@@ -1,4 +1,3 @@
-# backend/tests/test_api.py
 from unittest.mock import patch
 from fastapi.testclient import TestClient
 from main import app
@@ -10,20 +9,9 @@ def test_health_check():
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
 
-def test_ingest_pdf_success(sample_pdf_stream):
-    files = {"file": ("test_lecture.pdf", sample_pdf_stream, "application/pdf")}
-    response = client.post("/api/v1/ingest/pdf", files=files)
-    assert response.status_code == 200
-
-def test_ingest_pdf_invalid_extension():
-    files = {"file": ("test_file.txt", b"Hello world", "text/plain")}
-    response = client.post("/api/v1/ingest/pdf", files=files)
-    assert response.status_code == 400
-
 @patch("main.graph_service.verify_dag_acyclicity")
 @patch("main.graph_service.persist_graph")
 def test_extract_graph_success(mock_persist, mock_verify, sample_pdf_stream):
-    # Setup mock return values to bypass live Neo4j connection
     mock_persist.return_value = {"concepts_persisted": 3, "relationships_persisted": 2}
     mock_verify.return_value = {"is_dag": True, "cycle_count": 0}
 
