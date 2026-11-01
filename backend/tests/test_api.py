@@ -9,6 +9,8 @@ def test_health_check():
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
 
+# backend/tests/test_api.py
+
 @patch("main.graph_service.verify_dag_acyclicity")
 @patch("main.graph_service.persist_graph")
 def test_extract_graph_success(mock_persist, mock_verify, sample_pdf_stream):
@@ -21,9 +23,13 @@ def test_extract_graph_success(mock_persist, mock_verify, sample_pdf_stream):
     assert response.status_code == 200
     data = response.json()
     assert data["filename"] == "test_lecture.pdf"
-    assert "extracted_graph" in data
+    
+    # Updated Week 4 assertions
+    assert "normalized_graph" in data
+    assert "comparative_analytics" in data
+    
     assert data["topology_check"]["is_dag"] is True
-
+    
 def test_extract_graph_invalid_extension():
     files = {"file": ("test_file.txt", b"Hello world", "text/plain")}
     response = client.post("/api/v1/extract/graph", files=files)
