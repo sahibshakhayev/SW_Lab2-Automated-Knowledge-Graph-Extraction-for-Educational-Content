@@ -1,6 +1,7 @@
 import io
 import base64
 import pdfplumber
+import fitz
 from typing import List, Tuple
 from PIL import Image
 from app.schemas.document import DocumentChunk, ExtractedImage
@@ -64,3 +65,15 @@ class PDFProcessor:
                     chunks.append(chunk)
                     
         return chunks, total_images
+
+    @staticmethod
+    def render_slide_page(pdf_bytes: bytes, page_num: int) -> bytes:
+        """Renders a specific PDF slide page to PNG format using PyMuPDF."""
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        # Ensure 0-indexed page bounds
+        page_idx = max(0, min(page_num - 1, len(doc) - 1))
+        page = doc[page_idx]
+        
+        # Render page to high-DPI pixmap
+        pix = page.get_pixmap(dpi=150)
+        return pix.tobytes("png")

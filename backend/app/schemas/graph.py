@@ -3,9 +3,10 @@ from typing import List, Optional
 
 class ExtractedConcept(BaseModel):
     concept_id: str = Field(description="Unique snake_case identifier, e.g., hill_climbing")
-    name: str = Field(description="Human-readable concept name, e.g., Hill-Climbing Search")
-    description: str = Field(description="Brief 1-2 sentence definition of the concept")
-    domain: Optional[str] = Field(default="Computer Science", description="Academic domain")
+    name: str = Field(description="Human-readable concept name")
+    description: str = Field(description="Brief definition of the concept")
+    domain: Optional[str] = Field(default="Computer Science")
+    source_slides: List[int] = Field(default_factory=list, description="List of PDF slide page numbers where concept appears")
 
 class PrerequisiteRelation(BaseModel):
     source_concept_id: str = Field(description="Prerequisite concept required first")
@@ -16,3 +17,7 @@ class PrerequisiteRelation(BaseModel):
 class GraphExtractionResponse(BaseModel):
     concepts: List[ExtractedConcept]
     relationships: List[PrerequisiteRelation]
+
+class UnmergeRequest(BaseModel):
+    canonical_id: str
+    target_synonym_name: str

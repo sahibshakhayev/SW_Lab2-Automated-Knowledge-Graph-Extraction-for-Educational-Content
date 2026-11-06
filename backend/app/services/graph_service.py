@@ -21,6 +21,55 @@ class GraphService:
         """
         with self.driver.session() as session:
             session.run(query)
+    
+    def run_query(self, query: str, parameters: dict = None):
+        """Executes a custom Cypher query against the Neo4j instance."""
+        if not self.driver:
+            return None
+        with self.driver.session() as session:
+            result = session.run(query, parameters or {})
+            return [record.data() for record in result]
+        
+    def verify_dag_acyclicity(self):
+        """Checks Neo4j for cyclic prerequisite loops and returns cycle paths."""
+        query = """
+        MATCH path = (c:Concept)-[:PREREQUISITE_OF*1..5]->(c)
+        RETURN [node IN nodes(path) | node.id] AS cycle_path
+        LIMIT 10
+        """
+        results = self.run_query(query) or []
+        cycle_paths = [r["cycle_path"] for r in results]
+        
+        # Build set of cycle edge tuples (source -> target)
+        cycle_edges = []
+        for path in cycle_paths:
+            for i in range(len(path) - 1):
+                cycle_edges.append({"source": path[i], "target": path[i+1]})
+
+        return {
+            "is_dag": len(cycle_paths) == 0,
+            "cycle_count": len(cycle_paths),
+            "cycles": cycle_paths,
+            "cycle_edges": cycle_edges
+        }
+
+    def unmerge_concept(self, canonical_id: str, target_synonym_name: str):
+        """Detaches a synonym from a canonical entity and re-creates it as a standalone node."""
+        new_id = target_synonym_name.lower().replace(" ", "_").replace("-", "_")
+        query = """
+        MERGE (c:Concept {id: $new_id})
+        SET c.name = $name, 
+            c.description = $desc, 
+            c.domain = 'Computer Science', 
+            c.unmerged = true
+        RETURN c
+        """
+        params = {
+            "new_id": new_id,
+            "name": target_synonym_name,
+            "desc": f"Manually unmerged concept split from {canonical_id}."
+        }
+        return self.run_query(query, params)
 
     def persist_graph(self, concepts: List[ExtractedConcept], relationships: List[PrerequisiteRelation]) -> Dict[str, int]:
         """Atomically merges concepts and prerequisite edges into Neo4j."""

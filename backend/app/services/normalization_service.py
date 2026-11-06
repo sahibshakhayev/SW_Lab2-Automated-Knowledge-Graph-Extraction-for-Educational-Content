@@ -46,6 +46,17 @@ class ConceptNormalizer:
             
             for idx in cluster_indices:
                 canonical_map[concepts[idx].concept_id] = canonical_concept.concept_id
+
+            # =========================================================================
+            # NEW: Merge slide page references from all synonymous concepts
+            # =========================================================================
+            merged_slides = sorted(list(set(
+                slide_num 
+                for idx in cluster_indices 
+                for slide_num in (getattr(concepts[idx], 'source_slides', []) or [])
+            )))
+            canonical_concept.source_slides = merged_slides if merged_slides else [1]
+            # =========================================================================
                 
             normalized_concepts.append(canonical_concept)
             
@@ -76,7 +87,7 @@ class ConceptNormalizer:
                     )
                 )
 
-        # 5. Generate Week 4 Comparative Analytics
+        # 5. Generate Comparative Analytics
         metrics = {
             "raw_concept_count": len(concepts),
             "normalized_concept_count": len(normalized_concepts),
