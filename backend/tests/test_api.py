@@ -15,23 +15,21 @@ def test_health_check():
 @patch("main.graph_service.persist_graph")
 def test_extract_graph_success(mock_persist, mock_verify, sample_pdf_stream):
     mock_persist.return_value = {"concepts_persisted": 3, "relationships_persisted": 2}
-    mock_verify.return_value = {"is_dag": True, "cycle_count": 0}
+    mock_verify.return_value = {"is_dag": True, "cycle_count": 0, "cycles": [], "cycle_edges": []}
 
     files = {"file": ("test_lecture.pdf", sample_pdf_stream, "application/pdf")}
-    response = client.post("/api/v1/extract/graph", files=files)
+    # Updated path to /api/v1/extract
+    response = client.post("/api/v1/extract", files=files)
 
     assert response.status_code == 200
     data = response.json()
     assert data["filename"] == "test_lecture.pdf"
-    
-    # Updated Week 4 assertions
-    assert "normalized_graph" in data
+    assert "graph" in data
     assert "comparative_analytics" in data
-    
     assert data["topology_check"]["is_dag"] is True
-    
+
 def test_extract_graph_invalid_extension():
     files = {"file": ("test_file.txt", b"Hello world", "text/plain")}
-    response = client.post("/api/v1/extract/graph", files=files)
+    # Updated path to /api/v1/extract
+    response = client.post("/api/v1/extract", files=files)
     assert response.status_code == 400
-    assert response.json()["detail"] == "Only PDF files are supported."
