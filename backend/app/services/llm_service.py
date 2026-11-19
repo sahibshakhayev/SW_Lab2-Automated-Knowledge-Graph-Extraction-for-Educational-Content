@@ -28,10 +28,12 @@ class LLMExtractionService:
         ])
 
         system_prompt = (
-        "You are an expert academic knowledge graph extractor.\n"
-        "Analyze the provided lecture slide text and extract concepts and prerequisite dependencies.\n"
-        "CRITICAL INSTRUCTION: For each concept extracted, you MUST populate 'source_slides' "
-        "with an integer array of the slide page numbers (e.g. [3] or [4, 7]) where the concept appears."
+    "You are an expert academic knowledge graph extractor.\n"
+    "Extract concepts and strictly directed prerequisite dependencies (A -> B means a student MUST learn A before B).\n"
+    "RULES:\n"
+    "1. Populate 'source_slides' with the exact integer slide page numbers where each concept appears.\n"
+    "2. NEVER output bidirectional or cyclic prerequisites (if A -> B exists, do NOT output B -> A).\n"
+    "3. Base prerequisite direction on teaching progression from earlier slides to later slides."
         )
 
         headers = {

@@ -1,8 +1,10 @@
 import numpy as np
+from collections import defaultdict
 from typing import List, Dict, Tuple
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 from app.schemas.graph import ExtractedConcept, PrerequisiteRelation
+
 
 class ConceptNormalizer:
     def __init__(self, model_name: str = "sentence-transformers/all-MiniLM-L6-v2", threshold: float = 0.82):
@@ -47,16 +49,13 @@ class ConceptNormalizer:
             for idx in cluster_indices:
                 canonical_map[concepts[idx].concept_id] = canonical_concept.concept_id
 
-            # =========================================================================
-            # NEW: Merge slide page references from all synonymous concepts
-            # =========================================================================
+            # Merge slide page references from all synonymous concepts
             merged_slides = sorted(list(set(
                 slide_num 
                 for idx in cluster_indices 
                 for slide_num in (getattr(concepts[idx], 'source_slides', []) or [])
             )))
             canonical_concept.source_slides = merged_slides if merged_slides else [1]
-            # =========================================================================
                 
             normalized_concepts.append(canonical_concept)
             
@@ -87,14 +86,57 @@ class ConceptNormalizer:
                     )
                 )
 
-        # 5. Generate Comparative Analytics
+        # 5. Enforce DAG Acyclicity via Teaching-Order Cycle Breaking
+        dag_relationships = self.break_prerequisite_cycles(normalized_concepts, remapped_relationships)
+
+        # 6. Generate Comparative Analytics
         metrics = {
             "raw_concept_count": len(concepts),
             "normalized_concept_count": len(normalized_concepts),
             "concepts_reduced": len(concepts) - len(normalized_concepts),
             "raw_relationship_count": len(relationships),
-            "normalized_relationship_count": len(remapped_relationships),
+            "normalized_relationship_count": len(dag_relationships),
             "merged_clusters": merged_clusters
         }
 
-        return normalized_concepts, remapped_relationships, metrics
+        return normalized_concepts, dag_relationships, metrics
+
+    def break_prerequisite_cycles(
+        self, concepts: List[ExtractedConcept], relationships: List[PrerequisiteRelation]
+    ) -> List[PrerequisiteRelation]:
+        """Removes cycle-forming back-edges using slide introduction order."""
+        first_slide = {
+            c.concept_id: min(c.source_slides) if getattr(c, "source_slides", None) else 999
+            for c in concepts
+        }
+
+        # Sort edges so forward teaching-order edges (earlier slide -> later slide) are kept first
+        sorted_rels = sorted(
+            relationships,
+            key=lambda r: (
+                first_slide.get(r.source_concept_id, 999) > first_slide.get(r.target_concept_id, 999),
+                first_slide.get(r.source_concept_id, 999),
+            ),
+        )
+
+        adj = defaultdict(list)
+        dag_relationships = []
+
+        def creates_cycle(src: str, dst: str) -> bool:
+            visited = set()
+            stack = [dst]
+            while stack:
+                node = stack.pop()
+                if node == src:
+                    return True
+                if node not in visited:
+                    visited.add(node)
+                    stack.extend(adj[node])
+            return False
+
+        for rel in sorted_rels:
+            if not creates_cycle(rel.source_concept_id, rel.target_concept_id):
+                adj[rel.source_concept_id].append(rel.target_concept_id)
+                dag_relationships.append(rel)
+
+        return dag_relationships

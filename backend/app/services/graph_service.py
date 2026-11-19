@@ -1,6 +1,8 @@
 import os
 from neo4j import GraphDatabase
-from typing import List, Dict, Any
+from collections import deque, defaultdict
+
+from typing import List, Dict, Any, Optional
 from app.schemas.graph import ExtractedConcept, PrerequisiteRelation
 
 class GraphService:
@@ -112,14 +114,104 @@ class GraphService:
 
         return {"concepts_persisted": concepts_created, "relationships_persisted": relations_created}
 
-    def verify_dag_acyclicity(self) -> Dict[str, Any]:
-        """Runs Cypher cycle check to ensure graph is a Directed Acyclic Graph (DAG)."""
-        query = """
-        MATCH (n:Concept)
-        WHERE (n)-[:PREREQUISITE_OF*1..]->(n)
-        RETURN count(n) AS cycle_count
+    def clear_graph(self):
+        """Clears all Concept nodes and relationships for a fresh single-lecture demo."""
+        self.run_query("MATCH (n:Concept) DETACH DELETE n")
+
+    def verify_dag_acyclicity(self, concept_ids: Optional[List[str]] = None):
+        """Finds unique simple prerequisite cycles without duplicate node rotations."""
+        where_clause = "WHERE ALL(n IN nodes(path) WHERE n.id IN $ids)" if concept_ids else ""
+        query = f"""
+        MATCH path = (c:Concept)-[:PREREQUISITE_OF*1..5]->(c)
+        {where_clause}
+        RETURN [node IN nodes(path) | node.id] AS cycle_path
         """
-        with self.driver.session() as session:
-            result = session.run(query).single()
-            cycle_count = result["cycle_count"] if result else 0
-            return {"is_dag": cycle_count == 0, "cycle_count": cycle_count}
+        results = self.run_query(query, {"ids": concept_ids} if concept_ids else None) or []
+
+        unique_cycles = {}
+        cycle_edges_set = set()
+
+        for r in results:
+            path = r["cycle_path"]
+            core_nodes = path[:-1]  # Exclude repeated closing node
+            if not core_nodes:
+                continue
+            # Canonicalize cycle rotation starting from lexicographically smallest node ID
+            min_idx = core_nodes.index(min(core_nodes))
+            canonical = tuple(core_nodes[min_idx:] + core_nodes[:min_idx])
+            unique_cycles[canonical] = list(canonical) + [canonical[0]]
+
+            for i in range(len(path) - 1):
+                cycle_edges_set.add((path[i], path[i + 1]))
+
+        return {
+            "is_dag": len(unique_cycles) == 0,
+            "cycle_count": len(unique_cycles),
+            "cycles": list(unique_cycles.values()),
+            "cycle_edges": [{"source": s, "target": t} for s, t in cycle_edges_set],
+        }
+
+    from collections import deque, defaultdict
+    from typing import Optional, Dict, Any, List
+
+    def get_learning_path(self, target_concept_id: Optional[str] = None) -> Dict[str, Any]:
+        """Computes a topologically sorted learning path using Kahn's Algorithm."""
+        nodes_res = self.run_query("MATCH (c:Concept) RETURN c.id AS id, c.name AS name, c.description AS description") or []
+        edges_res = self.run_query("MATCH (a:Concept)-[:PREREQUISITE_OF]->(b:Concept) RETURN a.id AS source, b.id AS target") or []
+
+        if not nodes_res:
+            return {"is_valid_dag": True, "sequence": [], "highlighted_node_ids": [], "highlighted_edges": []}
+
+        node_map = {n["id"]: n for n in nodes_res}
+        adj: Dict[str, List[str]] = defaultdict(list)
+        rev_adj: Dict[str, List[str]] = defaultdict(list)
+        in_degree: Dict[str, int] = {n["id"]: 0 for n in nodes_res}
+
+        for edge in edges_res:
+            src, tgt = edge["source"], edge["target"]
+            if src in node_map and tgt in node_map:
+                adj[src].append(tgt)
+                rev_adj[tgt].append(src)
+                in_degree[tgt] += 1
+
+        # If target_concept_id is specified, isolate its upstream prerequisite subgraph via reverse BFS
+        relevant_nodes = set(node_map.keys())
+        highlighted_edges = []
+        if target_concept_id and target_concept_id in node_map:
+            relevant_nodes = {target_concept_id}
+            queue = deque([target_concept_id])
+            while queue:
+                curr = queue.popleft()
+                for prereq in rev_adj[curr]:
+                    highlighted_edges.append({"source": prereq, "target": curr})
+                    if prereq not in relevant_nodes:
+                        relevant_nodes.add(prereq)
+                        queue.append(prereq)
+
+            # Recompute in-degrees restricted to the target subgraph
+            in_degree = {nid: 0 for nid in relevant_nodes}
+            for nid in relevant_nodes:
+                for nxt in adj[nid]:
+                    if nxt in relevant_nodes:
+                        in_degree[nxt] += 1
+
+        # Kahn's Algorithm for topological ordering
+        zero_in_queue = deque([nid for nid, deg in in_degree.items() if deg == 0])
+        sorted_sequence = []
+
+        while zero_in_queue:
+            curr_id = zero_in_queue.popleft()
+            sorted_sequence.append(node_map[curr_id])
+            for neighbor in adj[curr_id]:
+                if neighbor in relevant_nodes:
+                    in_degree[neighbor] -= 1
+                    if in_degree[neighbor] == 0:
+                        zero_in_queue.append(neighbor)
+
+        return {
+            "is_valid_dag": len(sorted_sequence) == len(relevant_nodes),
+            "target_concept_id": target_concept_id,
+            "sequence": sorted_sequence,
+            "highlighted_node_ids": list(relevant_nodes),
+            "highlighted_edges": highlighted_edges
+        }
