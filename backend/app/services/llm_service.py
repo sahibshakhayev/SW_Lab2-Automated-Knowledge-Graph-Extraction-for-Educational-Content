@@ -19,18 +19,19 @@ class LLMExtractionService:
             return self._mock_fallback_extraction(filename)
 
         # Combine text chunks into formatted slide prompt
-        combined_text = "\n\n".join(
-            [f"--- Slide {c.page_number} ---\n{c.content}" for c in chunks if c.content and c.content.strip()]
-        )
+        # 1. Format chunks with explicit slide page headers
+
+        combined_text = "\n\n".join([
+        f"--- [SLIDE PAGE {chunk.page_number}] ---\n{chunk.content}"
+        for chunk in chunks
+        if chunk.content
+        ])
 
         system_prompt = (
-            "You are an expert academic knowledge graph extractor. "
-            "Analyze the provided lecture slide content and extract core educational concepts "
-            "and direct prerequisite relationships (PREREQUISITE_OF).\n\n"
-            "Extraction Rules:\n"
-            "1. Concept IDs must be lowercase snake_case (e.g., hill_climbing_search).\n"
-            "2. Only extract explicit prerequisite dependencies where Concept A is necessary to understand Concept B.\n"
-            "3. Provide brief 1-sentence reasoning for each prerequisite link."
+        "You are an expert academic knowledge graph extractor.\n"
+        "Analyze the provided lecture slide text and extract concepts and prerequisite dependencies.\n"
+        "CRITICAL INSTRUCTION: For each concept extracted, you MUST populate 'source_slides' "
+        "with an integer array of the slide page numbers (e.g. [3] or [4, 7]) where the concept appears."
         )
 
         headers = {

@@ -49,6 +49,7 @@ function InteractiveGraphCanvas({
   relationships,
   cycleEdges,
   layoutMode,
+  isLoading,
   onSelectConcept,
   canvasRef,
 }: {
@@ -56,6 +57,7 @@ function InteractiveGraphCanvas({
   relationships: Relationship[];
   cycleEdges: CycleEdge[];
   layoutMode: 'circular' | 'hierarchical' | 'force';
+  isLoading : boolean;
   onSelectConcept: (c: Concept) => void;
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
 }) {
@@ -271,6 +273,22 @@ function InteractiveGraphCanvas({
 
   return (
     <div className="relative border border-slate-700/60 rounded-xl bg-slate-900/90 overflow-hidden shadow-2xl">
+      
+{/* Centered Loading Circle Overlay */}
+      {isLoading && (
+        <div className="absolute inset-0 z-30 bg-slate-950/75 backdrop-blur-sm flex flex-col items-center justify-center gap-3 transition-opacity">
+          <Loader2 className="w-12 h-12 text-blue-400 animate-spin" />
+          <div className="text-center">
+            <p className="text-sm font-semibold text-slate-200 animate-pulse">
+              Running Knowledge Graph Pipeline...
+            </p>
+            <p className="text-xs text-slate-400 mt-1">
+              Parsing PDF slides & running vector normalizer
+            </p>
+          </div>
+        </div>
+      )}
+
       <canvas
         ref={canvasRef}
         onMouseDown={handleMouseDown}
@@ -278,7 +296,8 @@ function InteractiveGraphCanvas({
         onMouseUp={handleMouseUp}
         className="w-full h-[540px] cursor-grab active:cursor-grabbing"
       />
-      {hoveredNode && (
+
+      {hoveredNode && !isLoading && (
         <div className="absolute bottom-4 left-4 right-4 bg-slate-800/95 border border-blue-500/50 p-3.5 rounded-xl shadow-xl backdrop-blur">
           <div className="flex items-center justify-between mb-1">
             <h4 className="font-bold text-blue-300 text-sm">{hoveredNode.name}</h4>
@@ -587,6 +606,7 @@ export default function Dashboard() {
             relationships={relationships}
             cycleEdges={cycleEdges}
             layoutMode={layoutMode}
+            isLoading={status === 'extracting' || status === 'normalizing'}
             onSelectConcept={setSelectedConcept}
             canvasRef={canvasRef}
           />
