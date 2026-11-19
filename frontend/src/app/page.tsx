@@ -395,6 +395,8 @@ function CytoscapeGraphViewer({
 export default function Dashboard() {
   const cyRef = useRef<Core | null>(null);
   const [file, setFile] = useState<File | null>(null);
+  const [uploadedFiles, setUploadedFiles] = useState<string[]>([]);
+  const [appendMode, setAppendMode] = useState<boolean>(false);
   const [status, setStatus] = useState<string>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
@@ -420,6 +422,7 @@ export default function Dashboard() {
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       const selectedFile = e.target.files[0];
+      e.target.value = '';
       setFile(selectedFile);
       await processPDF(selectedFile);
     }
@@ -432,6 +435,7 @@ export default function Dashboard() {
 
     const formData = new FormData();
     formData.append('file', pdfFile);
+    formData.append('append_mode', String(appendMode));
 
     try {
       const response = await fetch('http://localhost:8000/api/v1/extract', {
@@ -448,10 +452,37 @@ export default function Dashboard() {
       const data = await response.json();
 
       setAnalytics(data.comparative_analytics);
-      setConcepts(data.graph.concepts);
-      setRelationships(data.graph.relationships);
       setCycleCount(data.topology_check?.cycle_count ?? 0);
       setCycleEdges(data.topology_check?.cycle_edges ?? []);
+
+      if (appendMode) {
+        // Fetch unified multi-lecture graph from Neo4j when merging decks
+        const fullGraphRes = await fetch('http://localhost:8000/api/v1/graph?limit=500');
+        if (fullGraphRes.ok) {
+          const fullGraphData = await fullGraphRes.json();
+          setConcepts(fullGraphData.graph.concepts);
+          setRelationships(fullGraphData.graph.relationships);
+        } else {
+          setConcepts((prev) => {
+            const map = new Map(prev.map((c) => [c.concept_id, c]));
+            data.graph.concepts.forEach((c: Concept) => map.set(c.concept_id, c));
+            return Array.from(map.values());
+          });
+          setRelationships((prev) => {
+            const map = new Map(prev.map((r) => [`${r.source_concept_id}->${r.target_concept_id}`, r]));
+            data.graph.relationships.forEach((r: Relationship) =>
+              map.set(`${r.source_concept_id}->${r.target_concept_id}`, r)
+            );
+            return Array.from(map.values());
+          });
+        }
+        setUploadedFiles((prev) => (prev.includes(pdfFile.name) ? prev : [...prev, pdfFile.name]));
+      } else {
+        setConcepts(data.graph.concepts);
+        setRelationships(data.graph.relationships);
+        setUploadedFiles([pdfFile.name]);
+      }
+
       setStatus('success');
     } catch (err: any) {
       setErrorMessage(err.message || 'An error occurred during processing.');
@@ -734,10 +765,38 @@ export default function Dashboard() {
               <span className="text-xs text-slate-500 mt-1">PDF slides up to 50MB</span>
               <input type="file" accept=".pdf" className="hidden" onChange={handleFileUpload} />
             </label>
+
+            {/* Multi-Lecture Merge Toggle (append_mode) */}
+            <label className="mt-4 p-3 bg-slate-950/70 border border-slate-800 rounded-lg flex items-start gap-2.5 cursor-pointer select-none hover:border-slate-700 transition-colors">
+              <input
+                type="checkbox"
+                checked={appendMode}
+                onChange={(e) => setAppendMode(e.target.checked)}
+                className="mt-0.5 rounded border-slate-700 bg-slate-900 text-blue-500 focus:ring-blue-500"
+              />
+              <div className="text-xs">
+                <span className="font-semibold text-slate-200 block">
+                  Multi-Lecture Merge Mode
+                </span>
+                <span className="text-[11px] text-slate-400">
+                  {appendMode
+                    ? 'Appending new slides into the existing Neo4j course graph.'
+                    : 'Resets Neo4j before upload for clean single-deck inspection.'}
+                </span>
+              </div>
+            </label>
+
             {file && (
-              <div className="mt-4 p-3 bg-slate-950 rounded-lg border border-slate-800 flex items-center justify-between text-xs font-mono text-slate-300">
-                <span className="truncate max-w-[180px]">{file.name}</span>
-                <span>{(file.size / 1024 / 1024).toFixed(2)} MB</span>
+              <div className="mt-3 p-3 bg-slate-950 rounded-lg border border-slate-800 space-y-1.5 text-xs font-mono text-slate-300">
+                <div className="flex items-center justify-between">
+                  <span className="truncate max-w-[180px]">{file.name}</span>
+                  <span>{(file.size / 1024 / 1024).toFixed(2)} MB</span>
+                </div>
+                {uploadedFiles.length > 1 && (
+                  <div className="pt-1.5 border-t border-slate-800/80 text-[11px] text-blue-300 font-sans">
+                    Merged decks ({uploadedFiles.length}): {uploadedFiles.join(', ')}
+                  </div>
+                )}
               </div>
             )}
           </div>
