@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from typing import Optional
 from pathlib import Path
-
+import os
 from app.schemas.graph import UnmergeRequest
 from app.services.pdf_service import PDFProcessor
 from app.services.llm_service import LLMExtractionService
@@ -89,6 +89,38 @@ async def extract_and_persist_graph(
             "relationships": normalized_relations,
         },
     }
+
+
+from typing import Optional
+from pydantic import BaseModel
+
+
+class UnmergeRequest(BaseModel):
+    canonical_id: str
+    target_synonym_name: str
+
+
+@app.post("/api/v1/courses/{course_id}/unmerge")
+async def unmerge_course_concept(course_id: str, payload: UnmergeRequest):
+    try:
+        concept = graph_service.unmerge_course_synonym(
+            course_id, payload.canonical_id, payload.target_synonym_name
+        )
+        return {"status": "success", "unmerged_concept": concept}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/v1/evaluate/benchmarks")
+async def get_evaluation_benchmarks(course_id: Optional[str] = None):
+    """Returns structural topology, node compression, cycle pruning, and DAG depth benchmarks."""
+    try:
+        return graph_service.compute_graph_benchmarks(course_id=course_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+
 
 
 @app.get("/api/v1/graph/learning-path")
@@ -190,3 +222,235 @@ async def unmerge_synonym_cluster(payload: UnmergeRequest):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to unmerge cluster: {str(e)}")
+
+
+
+from app.models.schemas import (
+    CourseCreate,
+    CourseUpdate,
+    ConceptCreateRequest,
+    ConceptUpdateRequest,
+    ConceptMergeRequest,
+    EdgeCreateRequest,
+    EdgeUpdateRequest,
+    LecturerEvaluationRequest,
+)
+
+# ------------------------------------------------------------------
+# Course CRUD Endpoints
+# ------------------------------------------------------------------
+@app.get("/api/v1/courses")
+async def list_courses():
+    return {"courses": graph_service.list_courses()}
+
+
+@app.post("/api/v1/courses")
+async def create_course(payload: CourseCreate):
+    course = graph_service.create_course(payload.code, payload.title, payload.description or "")
+    return {"status": "success", "course": course}
+
+
+@app.put("/api/v1/courses/{course_id}")
+async def update_course(course_id: str, payload: CourseUpdate):
+    try:
+        course = graph_service.update_course(course_id, payload.code, payload.title, payload.description)
+        return {"status": "success", "course": course}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.delete("/api/v1/courses/{course_id}")
+async def delete_course(course_id: str):
+    graph_service.delete_course(course_id)
+    return {"status": "success"}
+
+
+@app.get("/api/v1/courses/{course_id}/graph")
+async def get_course_graph(course_id: str):
+    try:
+        return graph_service.get_course_graph(course_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+# ------------------------------------------------------------------
+# Course-Wide PDF Extraction & Multi-Lecture Merging
+# ------------------------------------------------------------------
+@app.post("/api/v1/courses/{course_id}/extract")
+async def extract_into_course(
+    course_id: str,
+    file: UploadFile = File(...),
+    append_mode: bool = Form(True),
+):
+    if not file.filename or not file.filename.endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF slide decks are supported.")
+
+    file_bytes = await file.read()
+
+    # Persist PDF in /tmp/pdf_cache for slide rendering
+    cache_path = CACHE_DIR / file.filename
+    with open(cache_path, "wb") as f:
+        f.write(file_bytes)
+
+    chunks, total_images = PDFProcessor.extract_chunks_from_pdf(file_bytes, file.filename)
+    if not chunks:
+        raise HTTPException(status_code=400, detail="Could not parse text chunks from uploaded PDF.")
+
+    raw_graph = llm_service.extract_graph_from_chunks(chunks, file.filename)
+
+    if not append_mode:
+        graph_service.clear_course_graph(course_id)
+        existing_concepts = []
+    else:
+        existing_concepts = graph_service.get_existing_concepts(course_id)
+
+    normalized_concepts, normalized_relations, analytics = normalizer.normalize_graph(
+        raw_graph.concepts,
+        raw_graph.relationships,
+        existing_concepts=existing_concepts,
+    )
+    full_graph = graph_service.persist_course_extraction(
+        course_id=course_id,
+        filename=file.filename,
+        raw_concepts=raw_graph.concepts,
+        raw_relationships=raw_graph.relationships,
+        concepts=normalized_concepts,
+        relationships=normalized_relations,
+        analytics=analytics,
+        append_mode=append_mode,
+    )
+
+    return {
+        "status": "success",
+        "comparative_analytics": analytics,
+        "graph": full_graph,
+        "topology_check": full_graph["topology_check"],
+    }
+# ------------------------------------------------------------------
+# Lecturer Full Graph Control (Concepts & Prerequisite Edges)
+# ------------------------------------------------------------------
+@app.post("/api/v1/courses/{course_id}/concepts")
+async def add_course_concept(course_id: str, payload: ConceptCreateRequest):
+    concept = graph_service.create_concept(
+        course_id,
+        payload.name,
+        payload.description,
+        payload.domain or "General",
+        payload.source_slides,
+        payload.source_file or "Lecturer Manual Entry",
+    )
+    return {"status": "success", "concept": concept}
+
+
+@app.put("/api/v1/courses/{course_id}/concepts/{concept_id}")
+async def edit_course_concept(course_id: str, concept_id: str, payload: ConceptUpdateRequest):
+    try:
+        concept = graph_service.update_concept(
+            course_id, concept_id, payload.name, payload.description, payload.domain or "General", payload.source_slides
+        )
+        return {"status": "success", "concept": concept}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.delete("/api/v1/courses/{course_id}/concepts/{concept_id}")
+async def remove_course_concept(course_id: str, concept_id: str):
+    graph_service.delete_concept(course_id, concept_id)
+    return {"status": "success"}
+
+
+@app.post("/api/v1/courses/{course_id}/concepts/merge")
+async def merge_course_concepts(course_id: str, payload: ConceptMergeRequest):
+    try:
+        graph_service.merge_concepts(course_id, payload.source_concept_id, payload.target_concept_id)
+        return {"status": "success", "graph": graph_service.get_course_graph(course_id)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/v1/courses/{course_id}/edges")
+async def add_course_edge(course_id: str, payload: EdgeCreateRequest):
+    try:
+        edge = graph_service.create_edge(course_id, payload.source_concept_id, payload.target_concept_id, payload.reasoning)
+        return {"status": "success", "edge": edge, "topology_check": graph_service.verify_dag_acyclicity(course_id)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.put("/api/v1/courses/{course_id}/edges")
+async def edit_course_edge(course_id: str, payload: EdgeUpdateRequest):
+    try:
+        edge = graph_service.update_edge(
+            course_id, payload.source_concept_id, payload.target_concept_id, payload.reasoning, payload.reverse_direction
+        )
+        return {"status": "success", "edge": edge, "topology_check": graph_service.verify_dag_acyclicity(course_id)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/v1/courses/{course_id}/edges")
+async def remove_course_edge(course_id: str, source_id: str, target_id: str):
+    graph_service.delete_edge(course_id, source_id, target_id)
+    return {"status": "success", "topology_check": graph_service.verify_dag_acyclicity(course_id)}
+
+
+# ------------------------------------------------------------------
+# Lecturer Evaluation & Gold-Standard Sign-Off
+# ------------------------------------------------------------------
+@app.get("/api/v1/courses/{course_id}/evaluation")
+async def get_course_evaluation(course_id: str):
+    try:
+        return graph_service.get_course_evaluation(course_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/api/v1/courses/{course_id}/evaluation")
+async def submit_course_evaluation(course_id: str, payload: LecturerEvaluationRequest):
+    try:
+        report = graph_service.save_lecturer_evaluation(
+            course_id,
+            payload.is_verified,
+            payload.accuracy_rating,
+            payload.completeness_rating,
+            payload.pedagogical_clarity_rating,
+            payload.lecturer_notes or "",
+        )
+        return {"status": "success", "evaluation": report}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+from fastapi.responses import PlainTextResponse
+
+
+@app.get("/api/v1/courses/{course_id}/evaluation/ablation")
+async def get_course_ablation(course_id: str):
+    try:
+        return graph_service.compute_ablation_benchmark(course_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.get("/api/v1/evaluation/cross-course-csv", response_class=PlainTextResponse)
+async def export_all_courses_benchmark_csv():
+    """Exports a multi-course ablation table (Raw vs. Auto-Normalized vs. Gold Standard) as CSV."""
+    courses = graph_service.list_courses()
+    lines = [
+        "CourseCode,CourseTitle,LecturesCount,VerifiedGoldStandard,"
+        "RawNodes,AutoNodes,GoldNodes,CompressionPct,"
+        "RawEdges,AutoEdges,GoldEdges,"
+        "RawConceptF1,NormConceptF1,RawEdgeF1,NormEdgeF1,RawGED,NormGED"
+    ]
+    for c in courses:
+        b = graph_service.compute_ablation_benchmark(c["id"])
+        cnt = b["counts"]
+        s1 = b["stage1_raw_vs_gold"]
+        s2 = b["stage2_normalized_vs_gold"]
+        lines.append(
+            f"\"{b['course_code']}\",\"{b['course_title']}\",{len(b['lectures'])},{b['is_verified_gold_standard']},"
+            f"{cnt['raw_nodes']},{cnt['auto_nodes']},{cnt['gold_nodes']},{cnt['node_compression_pct']},"
+            f"{cnt['raw_edges']},{cnt['auto_edges']},{cnt['gold_edges']},"
+            f"{s1['concepts']['f1']},{s2['concepts']['f1']},{s1['edges']['f1']},{s2['edges']['f1']},"
+            f"{s1['graph_edit_distance']},{s2['graph_edit_distance']}"
+        )
+    return "\n".join(lines)
